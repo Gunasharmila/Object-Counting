@@ -1,0 +1,180 @@
+import cv2
+import tensorflow as tf
+import numpy as np
+from datetime import datetime
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+
+### ========= PART 1: Load Faster R-CNN Model ========= ###
+
+def load_detection_model(model_path):
+    """Loads the TensorFlow Faster R-CNN object detection model."""
+    model = tf.saved_model.load(model_path).signatures['serving_default']
+    return model
+
+### ========= PART 2: Object Detection with Proper ROI Handling ========= ###
+
+# Define the ROI (Region of Interest) dimensions in pixels
+ROI_X_START, ROI_Y_START = (640 - 520) // 2, (480 - 520) // 2  # Adjust ROI center
+ROI_WIDTH, ROI_HEIGHT = 520, 520  # Original ROI size
+ROI_X_END, ROI_Y_END = ROI_X_START + ROI_WIDTH, ROI_Y_START + ROI_HEIGHT
+
+def run_inference(model, image):
+    """Runs Faster R-CNN object detection inference on an image."""
+    input_tensor = tf.convert_to_tensor(image)[tf.newaxis, ...]
+    output_dict = model(input_tensor)
+    return output_dict
+
+def is_inside_roi(x_min, y_min, x_max, y_max):
+    """Checks if the majority of an object's bounding box is inside the ROI."""
+    # Calculate intersection area
+    inter_x_min = max(x_min, ROI_X_START)
+    inter_y_min = max(y_min, ROI_Y_START)
+    inter_x_max = min(x_max, ROI_X_END)
+    inter_y_max = min(y_max, ROI_Y_END)
+
+    if inter_x_min >= inter_x_max or inter_y_min >= inter_y_max:
+        return False  # No overlap with ROI
+
+    obj_area = (x_max - x_min) * (y_max - y_min)
+    inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+
+    return (inter_area / obj_area) > 0.5  # At least 50% of the object inside ROI
+
+def count_objects(frame, output_dict, confidence_threshold=0.5):
+    """Counts only objects fully inside the ROI and draws bounding boxes."""
+    h, w = frame.shape[:2]
+    roi_count = 0  
+
+    for i in range(int(output_dict['num_detections'][0])):
+        score = output_dict['detection_scores'][0][i].numpy()
+        if score < confidence_threshold:
+            continue  # Ignore low-confidence detections
+
+        box = output_dict['detection_boxes'][0][i].numpy()
+        x_min, y_min = int(box[1] * w), int(box[0] * h)
+        x_max, y_max = int(box[3] * w), int(box[2] * h)
+
+        if is_inside_roi(x_min, y_min, x_max, y_max):
+            roi_count += 1
+            box_color = (0, 0, 255)  # Red for objects inside ROI
+        else:
+            box_color = (0, 255, 0)  # Green for objects outside ROI (not counted)
+
+        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), box_color, 2)
+
+    # Draw the ROI rectangle in blue
+    cv2.rectangle(frame, (ROI_X_START, ROI_Y_START), (ROI_X_END, ROI_Y_END), (255, 0, 0), 3)
+
+    return frame, roi_count
+
+def process_webcam_display(detection_model, camera_index=0, frame_skip=30):
+    """Processes the webcam video and detects objects inside the ROI in real-time."""
+    cap = cv2.VideoCapture(camera_index)
+    if not cap.isOpened():
+        print("Error: Webcam not opened.")
+        return 0
+
+    frame_count, roi_count_final = 0, 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_count += 1
+        if frame_count % frame_skip != 0:
+            continue  # Skip frames for better performance
+
+        frame_resized = cv2.resize(frame, (640, 640))
+        frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+        output_dict = run_inference(detection_model, frame_rgb)
+
+        frame_annotated, roi_count = count_objects(frame_resized, output_dict)
+        roi_count_final = roi_count
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame_annotated, f"Timestamp: {timestamp}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame_annotated, f"Items in ROI: {roi_count}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        cv2.imshow("Object Detection", frame_annotated)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    return roi_count_final  
+
+### ========= PART 3: User Input and Bill Validation ========= ###
+
+def get_items_and_counts():
+    """Prompts the user to enter item names and quantities."""
+    root = tk.Tk()
+    root.withdraw()
+
+    items_dict = {}
+    total_items = 0
+
+    while True:
+        item_name = simpledialog.askstring("Food City Bill", "Enter item name (or press Cancel to finish):")
+        if not item_name:
+            break
+
+        item_count = simpledialog.askinteger("Food City Bill", f"Enter quantity for {item_name}:", minvalue=1, maxvalue=100)
+        if item_count is None:
+            break
+
+        items_dict[item_name] = item_count
+        total_items += item_count
+
+    root.destroy()
+    return items_dict, total_items                                                                                                                
+def print_bill(items_dict, total_items):
+    """Displays the bill with an OK button like Food City."""
+    bill_summary = "🛒 Food City Bill 🛒\n"
+    bill_summary += "-----------------------------\n"
+    for item, count in items_dict.items():
+        bill_summary += f"{itmem}: {count} pcs\n"
+    bill_summary += "-----------------------------\n"
+    bill_summary += f"Total Items: {total_items} pcs\n"
+    bill_summary += "✅ Thank you for shopping at Food City!"
+
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo("Food City Bill", bill_summary)
+
+    # Display an OK button after the bill
+    ok_button = tk.Toplevel(root)
+    ok_button.title("OK Confirmation")
+    tk.Label(ok_button, text="Press OK to confirm.").pack(pady=10)
+    tk.Button(ok_button, text="OK", command=ok_button.destroy).pack(pady=5)
+    root.mainloop()
+
+def validate_and_print_bill(items_dict, total_items, detected_count):
+    """Validates if detected count matches user input before printing the bill."""
+    root = tk.Tk()
+    root.withdraw()
+
+    if total_items == detected_count:
+        messagebox.showinfo("Validation", "✅ OK! The number of items matches the detected count.")
+        print_bill(items_dict, total_items)
+    else:
+        messagebox.showerror("Validation", f"❌ Mismatch! Expected: {total_items}, Detected: {detected_count}")
+
+    root.destroy()
+
+### ========= MAIN EXECUTION ========= ###
+
+if __name__ == "__main__":
+    # Load Faster R-CNN model
+    model_path = r"C:\DeepLearning\Tensorflow\workspace\training_demo\pre-trained-models\faster_rcnn_resnet50_v1_640x640_coco17_tpu-8\saved_model"
+    detection_model = load_detection_model(model_path)
+
+    print("Starting object detection. Press 'q' to quit.")
+    detected_roi_count = process_webcam_display(detection_model)
+
+    items, expected_items_count = get_items_and_counts()
+
+    validate_and_print_bill(items, expected_items_count, detected_roi_count)
