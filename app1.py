@@ -1,0 +1,132 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+import streamlit as st
+from datetime import datetime
+
+# Function to load the model
+def load_detection_model(model_path):
+    model = tf.saved_model.load(model_path).signatures['serving_default']
+    return model
+
+# Function to run inference on the frame
+def run_inference(model, frame):
+    input_tensor = tf.convert_to_tensor(frame)[tf.newaxis, ...]
+    output_dict = model(input_tensor)
+    return output_dict
+
+# Function to check if the object is inside ROI
+def is_inside_roi(x_min, y_min, x_max, y_max, roi_x_start, roi_y_start, roi_x_end, roi_y_end):
+    inter_x_min = max(x_min, roi_x_start)
+    inter_y_min = max(y_min, roi_y_start)
+    inter_x_max = min(x_max, roi_x_end)
+    inter_y_max = min(y_max, roi_y_end)
+
+    if inter_x_min >= inter_x_max or inter_y_min >= inter_y_max:
+        return False
+
+    obj_area = (x_max - x_min) * (y_max - y_min)
+    inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+    return (inter_area / obj_area) > 0.5
+
+# Count objects in the ROI
+def count_objects(frame, output_dict, roi_x_start, roi_y_start, roi_x_end, roi_y_end, confidence_threshold=0.5):
+    h, w = frame.shape[:2]
+    roi_count = 0
+
+    for i in range(int(output_dict['num_detections'][0])):
+        score = output_dict['detection_scores'][0][i].numpy()
+        if score < confidence_threshold:
+            continue
+
+        box = output_dict['detection_boxes'][0][i].numpy()
+        x_min, y_min = int(box[1] * w), int(box[0] * h)
+        x_max, y_max = int(box[3] * w), int(box[2] * h)
+
+        if is_inside_roi(x_min, y_min, x_max, y_max, roi_x_start, roi_y_start, roi_x_end, roi_y_end):
+            roi_count += 1
+            box_color = (0, 0, 255)
+        else:
+            box_color = (0, 255, 0)
+
+        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), box_color, 2)
+
+    return frame, roi_count
+
+# Process the webcam stream
+def process_webcam_feed(model, roi_x_start, roi_y_start, roi_x_end, roi_y_end):
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        st.error("Error: Webcam not opened.")
+        return 0
+
+    frame_placeholder = st.empty()  # Placeholder for Streamlit display
+    stop_detection = False
+    frame_count = 0
+    roi_count_final = 0
+
+    while not stop_detection:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_resized = cv2.resize(frame, (640, 640))
+        frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+        output_dict = run_inference(model, frame_rgb)
+
+        frame_annotated, roi_count = count_objects(frame_resized, output_dict, roi_x_start, roi_y_start, roi_x_end, roi_y_end)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame_annotated, f"Timestamp: {timestamp}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame_annotated, f"Items in ROI: {roi_count}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        frame_placeholder.image(frame_annotated, channels="BGR", use_container_width=True)
+
+        if st.button('Stop Detection'):
+            stop_detection = True
+
+        frame_count += 1
+        if frame_count % 30 == 0:  # Process every 30th frame
+            roi_count_final = roi_count
+
+    cap.release()
+    return roi_count_final
+
+# Display the detected count
+def display_items_and_counts(detected_count):
+    items_dict = {}
+    total_items = 0
+
+    # Ask user for item names and quantities
+    while True:
+        item_name = st.text_input("Enter item name (or leave empty to finish):")
+        if not item_name:
+            break
+
+        item_count = st.number_input(f"Enter quantity for {item_name}:", min_value=1, max_value=100)
+        if item_count:
+            items_dict[item_name] = item_count
+            total_items += item_count
+
+    if total_items == detected_count:
+        st.success("✅ Detected count matches the expected count!")
+        st.write(f"Detected {detected_count} items.")
+        st.write("Thank you for your input!")
+    else:
+        st.error(f"❌ Mismatch! Expected: {total_items}, Detected: {detected_count}")
+
+# Main code execution
+if __name__ == "__main__":
+    model_path = r"C:\DeepLearning\Tensorflow\workspace\training_demo\pre-trained-models\faster_rcnn_resnet50_v1_640x640_coco17_tpu-8\saved_model"
+    detection_model = load_detection_model(model_path)
+
+    # Define Region of Interest (ROI)
+    ROI_X_START, ROI_Y_START = (640 - 520) // 2, (480 - 520) // 2
+    ROI_WIDTH, ROI_HEIGHT = 520, 520
+    ROI_X_END, ROI_Y_END = ROI_X_START + ROI_WIDTH, ROI_Y_START + ROI_HEIGHT
+
+    detected_count = process_webcam_feed(detection_model, ROI_X_START, ROI_Y_START, ROI_X_END, ROI_Y_END)
+
+    display_items_and_counts(detected_count)

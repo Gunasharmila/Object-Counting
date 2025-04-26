@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Object Counting App</title>
+</head>
+<body>
+    <h1>Object Counting Web App</h1>
+    <video id="videoElement" width="640" height="480" autoplay></video>
+    <div>
+        <h2>Detected Objects: <span id="objectCount">0</span></h2>
+    </div>
+
+    <script>
+        // Set up the webcam feed
+        const video = document.getElementById('videoElement');
+        const socket = new WebSocket('ws://localhost:8000/ws');
+
+        // Start webcam stream
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(function (stream) {
+                video.srcObject = stream;
+            })
+            .catch(function (err) {
+                console.log("Error accessing webcam: ", err);
+            });
+
+        // WebSocket handling
+        socket.onmessage = function (event) {
+            const detectedCount = event.data;
+            document.getElementById('objectCount').textContent = detectedCount;
+        };
+    </script>
+</body>
+</html>
